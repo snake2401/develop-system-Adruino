@@ -32,7 +32,7 @@
 /**** Rotary temperature controle ****/
 /*************************************/
   const int  temp_encoderPin1 = 3;
-  const int  temp_encoderPin2 = 4;
+  const int  temp_encoderPin2 = 12;
   Encoder tempEnc(temp_encoderPin1, temp_encoderPin2);
 
   int temperature = 15; // Default temperatuur
@@ -74,15 +74,42 @@
   bool currentButtonState = HIGH;
   long timerbackground;
 
+
+/*************************************/
+/*****      RELAIS settings      *****/
+/*************************************/
+  const int heaterRelayPin = 12;
+  const int pumpRelayPin = 13;
+  const unsigned long pumpExtraTime = 5000; // 5 seconden langer
+  unsigned long heaterOffTime;
+  bool heaterActive = false;
+  bool pumpActive = false;
+  bool pumpDelayActive = false;
+  bool heater = false; // Deze variabele kun je ergens anders in de code wijzigen
+
+/*************************************/
+/*****      BUZZER settings      *****/
+/*************************************/
+  const int buzzerPin = 1;
+  bool buzzerActive = false;
+  bool buzzerState = false;
+  const unsigned long buzzerDuration = 3000; // 3 seconden
+  const unsigned long buzzerInterval = 500; // 0,5 seconde
+  unsigned long buzzerStartTime;
+  unsigned long lastBuzzerToggleTime;  
+
+
 void setup(void) {
+  pinMode(heaterRelayPin, OUTPUT);
+  pinMode(pumpRelayPin, OUTPUT);
+  digitalWrite(heaterRelayPin, LOW); // Zet het heater relais uit bij het opstarten
+  digitalWrite(pumpRelayPin, LOW);   // Zet het pump relais uit bij het opstarten
 
   Serial.begin(9600); // Initialize serial communication for debugging (optional)
 
   servoMotor.attach(servoPin); // Attach the servo to the control pin
   pinMode(timer_buttonPin, INPUT_PULLUP); // Attach timer rotary to pin
-
   tempEnc.write(0); // Reset encoder position
-  printTemperature(); // Print initial settemperature
 
   // SETUP INTERFACE GRID
   tft.init(240, 320);           // setting the resolution of display to 320x240
@@ -118,7 +145,9 @@ void setup(void) {
   tft.setTextSize(2);
   tft.print("start/stop");
 
-  // Placeholder Temperature
+  // Buzzer setup
+  pinMode(buzzerPin, OUTPUT);
+  digitalWrite(buzzerPin, LOW);      // Zet de buzzer uit bij het opstarten
 
 }
 
@@ -175,10 +204,11 @@ void loop() {
     }
   }
 
+  manageRelays();
 
 }
 
-
+// Set timer function using rotary encoder
 void readTimerEncoder() {
   long newPosition = timerEncoder.read() / 4;  // Dividing by 4 to slow down changes
 
@@ -196,6 +226,7 @@ void readTimerEncoder() {
   }
 }
 
+// Start - stop timer using rotary timer click
 void handleButtonPress() {
   currentButtonState = digitalRead(timer_buttonPin);
   if (lastButtonState == HIGH && currentButtonState == LOW) {
@@ -207,6 +238,7 @@ void handleButtonPress() {
   lastButtonState = currentButtonState;
 }
 
+// update running time function
 void updateTime() {
   unsigned long currentTime = millis();
   if (currentTime - lastUpdateTime >= 1000) {
@@ -225,6 +257,8 @@ void updateTime() {
   }
 }
 
+
+// print time to display function
 void printTime() {
   static int lastPrintedMinutes = -1;
   static int lastPrintedSeconds = -1;
@@ -261,6 +295,8 @@ void printTime() {
   }
 }
 
+
+//set temperature function using rotary encoder
 void readTemperatureEncoder() {
   long newTempPosition = tempEnc.read() / 4;  // Dividing by 4 to slow down changes
 
@@ -284,15 +320,10 @@ void readTemperatureEncoder() {
   tft.setTextSize(3);
   tft.print(" C");
 
-    printTemperature();
   }
 }
 
-void printTemperature() {
-  Serial.print("Temperature: ");
-  Serial.print(temperature);
-  Serial.println("°C");
-}
+
 
 void updateTimerBackground() {
   if (timerRunning) {
@@ -355,11 +386,17 @@ void printActualTemperature(float temperature) {
 void checkTemperatureAndTriggerRelay(float actualTemperature) {
   if (actualTemperature > temperature) {
         tft.fillCircle(300, 15, 7, ST77XX_BLUE);
+        heater = false;
 
   } else if (actualTemperature < temperature) {
         tft.fillCircle(300, 15, 7, ST77XX_RED);
+        heater = true;
+        
 
-  } else {tft.fillCircle(300, 15, 7, ST77XX_GREEN);}
+
+  } else {tft.fillCircle(300, 15, 7, ST77XX_GREEN);
+          heater = false;
+}
 
  Serial.print("Temperature: ");
   Serial.print(temperature);
@@ -368,3 +405,64 @@ void checkTemperatureAndTriggerRelay(float actualTemperature) {
 
 }
 
+void triggerRelay(int relayPin, bool state) {
+  digitalWrite(relayPin, state ? HIGH : LOW);
+}
+
+void manageRelays() {
+  unsigned long currentMillis = millis();
+
+  if (heater) {
+    if (!heaterActive) {
+      // Zet het heater relais aan
+      triggerRelay(heaterRelayPin, true);
+      heaterActive = true;
+    }
+
+    if (!pumpActive) {
+      // Zet het pump relais aan
+      triggerRelay(pumpRelayPin, true);
+      pumpActive = true;
+    }
+  } else {
+    if (heaterActive) {
+      // Zet het heater relais uit
+      triggerRelay(heaterRelayPin, false);
+      heaterActive = false;
+      // Noteer de tijd wanneer het heater relais is uitgezet
+      heaterOffTime = currentMillis;
+      // Start de 5 seconden vertraging voor het pump relais
+      pumpDelayActive = true;
+    }
+  }
+
+  // Controleer of het tijd is om het pump relais uit te schakelen
+  if (pumpDelayActive && (currentMillis - heaterOffTime >= pumpExtraTime)) {
+    triggerRelay(pumpRelayPin, false);
+    pumpActive = false;
+    pumpDelayActive = false;
+  }
+}
+
+
+// trigger the buzzer pin
+void toggleBuzzer() {
+  buzzerState = !buzzerState;
+  digitalWrite(buzzerPin, buzzerState ? HIGH : LOW);
+}
+
+// manager buzzertrigger and timer to set for 3s
+void manageBuzzer() {
+  unsigned long currentMillis = millis();
+
+  if (buzzerActive) {
+    if (currentMillis - buzzerStartTime >= buzzerDuration) {
+      digitalWrite(buzzerPin, LOW); // Zet de buzzer uit
+      buzzerActive = false;
+    } else if (currentMillis - lastBuzzerToggleTime >= buzzerInterval) {
+      // Toggle de buzzer om de 0,5 seconde
+      toggleBuzzer();
+      lastBuzzerToggleTime = currentMillis;
+    }
+  }
+}
